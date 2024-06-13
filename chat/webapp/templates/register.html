@@ -7,7 +7,7 @@
     <!-- Bootstrap CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css" integrity="sha384-xOolHFLEh07PJGoPkLv1IbcEPTNtaed2xpHsD9ESMhqIYd0nLMwNLD69Npy4HI+N" crossorigin="anonymous">
     <!-- External CSS -->
-    <link href="{{ url_for('static', filename='styles2.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet">
 </head>
 <body>
     <div class="register-container">
@@ -23,23 +23,113 @@
             <div class="alert alert-danger">{{ error }}</div>
         {% endif %}
         <form action="/register" method="post">
+            <input type="hidden" name="csrf_token" value = "{{ csrf_token() }}" />
             <div class="form-group">
                 <label for="username">Username</label>
-                <input type="text" class="form-control" id="username" name="username" required>
+                <input type="text" class="form-control" id="username" name="username" pattern="\w{3,16}" required>
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" class="form-control" id="password" name="password" required>
+                <input type="password" class="form-control" id="password" minlength="8" name="password" required>
+                <input type="checkbox" onclick="showPassword()"> Show Password
             </div>
-            <div class="form-group">
-                <label for="password re-input">Password</label>
-                <input type="password re-input" class="form-control" id="password re-input" name="password re-input" required>
+            <label for="">
+                Strength of password
+            </label>
+            <div class="power-container">
+                <div id="power-point"></div>
             </div>
+            <div style="text-align: center" class="h-captcha" data-sitekey="ddb9acb2-fd26-4180-88db-443dd30efdfa"></div>
             <div class="text-center">
-                <button type="submit" class="btn btn-primary">Register</button>
+                <button id="submit_button" type="submit" class="btn btn-primary">Register</button>
             </div>
         </form>
+        <div style="text-align: center;">
+            <a href="{{ url_for("index") }}" style="text-align: center">Back</a>
+        </div>
     </div>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/zxcvbn/4.4.2/zxcvbn.js" integrity="sha384-jhGcGHNZytnBnH1wbEM3KxJYyRDy9Q0QLKjE65xk+aMqXFCdvFuYIjzMWAAWBBtR" crossorigin="anonymous"></script>
+    <script src="https://js.hcaptcha.com/1/api.js" integrity="sha384-h68eyQM1/qM8Ctbg6uyjcCPP03r1GdgJHh9pt15yop3VXkoiqSboSJ/zPUK2MOG4" crossorigin="anonymous"></script>
+<script type="text/javascript">
+    let password = document.getElementById("password");
+    let power = document.getElementById("power-point");
+    let username = document.getElementById("username");
+    let submit_button = document.getElementById("submit_button");
+    let passStrengthScore;
+    let pwnedNum = "many";
+
+    submit_button.onclick = function () {
+        password.type == "password";
+    }
+
+    function showPassword() {
+        if (password.type === "password") {
+            password.type = "text";
+        } else {
+            password.type = "password";
+        }
+    }
+
+    password.oninput = function () {
+        let value = password.value;
+        let widthPower = ["1%", "25%", "50%", "75%", "100%"];
+        let colorPower = ["#D73F40", "#DC6551", "#F2B84F", "#BDE952", "#3ba62f"];
+        passStrengthScore = zxcvbn(value).score;
+        //console.log("score", passStrengthScore);
+        console.log(zxcvbn(value))
+        power.style.width = widthPower[passStrengthScore];
+        power.style.backgroundColor = colorPower[passStrengthScore];
+    }
+
+    // check if the password has been pwned
+    async function checkPwned(passwordStr) {
+        const Http = new XMLHttpRequest();
+        const enc = new TextEncoder();
+        const hashBuffer = await crypto.subtle.digest("SHA-1", enc.encode(passwordStr));
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map((b) => b.toString(16).padStart(2,"0")).join("").toUpperCase();
+        console.log(hashHex);
+        let prefix = hashHex.slice(0,5);
+        console.log(prefix);
+        const url = "https://api.pwnedpasswords.com/range/" + prefix;
+        let pwnedPasswordDict = {};
+        Http.onload = function () {
+            console.log(Http.status);
+            let pwnedPasswords = Http.responseText.split("\r\n");
+            for (let i in pwnedPasswords) {
+                let passNum = pwnedPasswords[i].split(":");
+                pwnedPasswordDict[prefix.concat(passNum[0])] = passNum[1];
+            }
+            console.log(pwnedPasswordDict);
+            console.log("password", hashHex);
+            if (hashHex in pwnedPasswordDict) {
+                console.log("Your password has been pwned " + pwnedPasswordDict[hashHex] + " times.");
+                password.setCustomValidity("You password has been pwned " + pwnedPasswordDict[hashHex] + " times.");
+            } else {
+                password.setCustomValidity("");
+            }
+         }
+        Http.open("GET", url, true);
+        Http.send();
+    }
+
+    // customize username validity
+    username.addEventListener("input", (event) => {
+       if (username.validity.patternMismatch) {
+           username.setCustomValidity("3 to 16 characters username");
+       }else {
+           username.setCustomValidity("");
+       }
+    });
+     // customize password validity
+    password.addEventListener("input", async (event) => {
+        if (passStrengthScore <= 2) {
+            password.setCustomValidity("Your password is too weak.");
+        } else checkPwned(password.value);
+    });
+
+</script>
 </body>
 </html>
 

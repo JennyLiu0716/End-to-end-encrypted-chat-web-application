@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css" integrity="sha384-xOolHFLEh07PJGoPkLv1IbcEPTNtaed2xpHsD9ESMhqIYd0nLMwNLD69Npy4HI+N" crossorigin="anonymous">
+    <!-- External CSS -->
+    <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet">
+</head>
+<body>
+    <div class="login-container">
+        <h2 class="text-center">Bind Recovery Keys</h2>
+        <div id="recovery-keys" style="text-align: center"></div>
+        <a href="/">
+        <div class="text-center">
+                <button class="btn btn-primary">Back</button>
+        </div>
+        </a>
+    </div>
+<script type="text/javascript">
+    let recovery_keys = {{ recovery_keys|tojson }};
+    let strRecoveryKeys = "";
+    for (let i in recovery_keys) {
+        let j = parseInt(i) + 1;
+        console.log(recovery_keys[i]);
+        strRecoveryKeys += (j) + (". ") + (recovery_keys[i]) + ("<br>");
+        console.log(strRecoveryKeys);
+    }
+    console.log(strRecoveryKeys);
+    document.getElementById("recovery-keys").innerHTML = strRecoveryKeys;
+    console.log(recovery_keys);
+</script>
+</body>
+</html>

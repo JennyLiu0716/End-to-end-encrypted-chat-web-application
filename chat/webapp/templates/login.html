@@ -9,7 +9,7 @@
     <!-- External CSS -->
     <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet">
 </head>
-<body onload="createCaptcha()">
+<body>
     <div class="login-container">
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
@@ -23,6 +23,7 @@
             <div class="alert alert-danger">{{ error }}</div>
         {% endif %}
         <form action="/login" method="post">
+            <input type="hidden" name="csrf_token" value = "{{ csrf_token() }}" />
             <div class="form-group">
                 <label for="username">Username</label>
                 <input type="text" class="form-control" id="username" name="username" required>
@@ -30,83 +31,39 @@
             <div class="form-group">
                 <label for="password">Password</label>
                 <input type="password" class="form-control" id="password" name="password" required>
+                <input type="checkbox" onclick="showPassword()"> Show Password
+            </div>
+            <div class="form-group">
+                <label for="otp">OTP</label>
+                <input type="text" class="form-control" id="otp" name="otp" required>
             </div>
 
-            <div >
-                <!-- <form onsubmit="validateCaptcha()"> -->
-                    <div id="captcha"></div>
-                    <input type="text" placeholder="Captcha" id="cpatchaTextBox" name ="cpatchaTextBox" required >
-                    <!-- <button type="submit">Submit</button> -->
-                  <!-- </form> -->
-            </div>
-
-            <input type="hidden" id="valid" name="valid"> 
-
+            <div style="text-align: center" class="h-captcha" data-sitekey="ddb9acb2-fd26-4180-88db-443dd30efdfa"></div>
             <div class="text-center">
-                <button type="submit" class="btn btn-primary">Login</button>
+                <button id="submit_button" type="submit" class="btn btn-primary">Login</button>
             </div>
         </form>
-        <!-- <div class="text-center">
-            <button type="submit" class="btn btn-primary">Login</button>
-        </div> -->
-        <button onclick="createCaptcha()" class="btn btn-primary">refresh</button>
-
-
-
-
-        <!-- <form action="/goToRegister" method="post">
-            <div class="text-center" style="margin-top: 10px;">
-                <a href="{{url_for('goToRegister')}} target="_blank" style="background-color: blue; color: white; padding: 10px 20px; display: inline-block; cursor: pointer; border-radius: 15px;">
-                    Register!
-                </a>
-            </div>
-        </form> -->
-
-        <div class="text-center" style="margin-top: 10px;">
-            <li><a href="/goToRegister">register</a></li>
+        <div class="register-link">
+            <p>Don't have an account? <a href="{{ url_for("register") }}">Register</a> </p>
         </div>
-
     </div>
+    <script src="https://js.hcaptcha.com/1/api.js" integrity="sha384-h68eyQM1/qM8Ctbg6uyjcCPP03r1GdgJHh9pt15yop3VXkoiqSboSJ/zPUK2MOG4" crossorigin="anonymous"></script>
+<script type="text/javascript">
+    let password = document.getElementById("password");
+    let submit_button = document.getElementById("submit_button");
+
+    submit_button.onclick = function () {
+        password.type == "password";
+    }
+
+
+    function showPassword() {
+        if (password.type === "password") {
+            password.type = "text";
+        } else {
+            password.type = "password";
+        }
+    }
+</script>
 </body>
 </html>
-
-<script>
-    var code;
-function createCaptcha() {
-  //clear the contents of captcha div first 
-  document.getElementById('captcha').innerHTML = "";
-  var charsArray =
-  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ@!#$%^&*";
-  var lengthOtp = 6;
-  var captcha = [];
-  for (var i = 0; i < lengthOtp; i++) {
-    //below code will not allow Repetition of Characters
-    var index = Math.floor(Math.random() * charsArray.length + 1); //get the next character from the array
-    if (captcha.indexOf(charsArray[index]) == -1)
-      captcha.push(charsArray[index]);
-    else i--;
-  }
-  var canv = document.createElement("canvas");
-  canv.id = "captcha";
-  canv.width = 100;
-  canv.height = 50;
-  var ctx = canv.getContext("2d");
-  ctx.font = "25px Georgia";
-  ctx.strokeText(captcha.join(""), 0, 30);
-  //storing captcha so that can validate you can save it somewhere else according to your specific requirements
-  code = captcha.join("");
-  document.getElementById("captcha").appendChild(canv); // adds the canvas to the body element
-  document.getElementById("valid").value = code; 
-}
-function validateCaptcha() {
-  event.preventDefault();
-//   debugger
-  if (document.getElementById("cpatchaTextBox").value == code) {
-    alert("Valid Captcha")
-  }else{
-    alert("Invalid Captcha. try Again");
-    createCaptcha();
-  }
-}
-
-</script>

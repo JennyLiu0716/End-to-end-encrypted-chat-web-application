@@ -10,8 +10,11 @@ CREATE TABLE users (
     user_id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(255) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL, -- In a real application, this should store hashed passwords, not plain text
+    totp_secret VARCHAR(255) NOT NULL,
+    recovery_keys VARCHAR(1000) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
 
 -- Create 'messages' table
 CREATE TABLE messages (
@@ -29,7 +32,7 @@ CREATE TABLE messages (
 );
 
 -- Optionally, insert some initial data for testing
-INSERT INTO users (username, password) VALUES ('Alice', 'password123'); -- Use hashed passwords in production
-INSERT INTO users (username, password) VALUES ('Bob', 'password456'); -- Use hashed passwords in production
-INSERT INTO users (username, password) VALUES ('Cat', 'password789'); -- Use hashed passwords in production
+-- INSERT INTO users (username, password) VALUES ('Alice', 'password123'); -- Use hashed passwords in production
+-- INSERT INTO users (username, password) VALUES ('Bob', 'password456'); -- Use hashed passwords in production
+-- INSERT INTO users (username, password) VALUES ('Cat', 'password789'); -- Use hashed passwords in production
 

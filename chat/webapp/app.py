@@ -29,30 +29,50 @@
 
 # session id protection
 
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash, make_response
 from flask_mysqldb import MySQL
 from flask_session import Session
-import yaml
-# from flask_limiter import Limiter
-# from flask_limiter.util import get_remote_address
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_wtf import CSRFProtect
+from flask_wtf.csrf import CSRFError
 
+import yaml
+import re
+import argon2
+import pyotp
+import secrets, string
+import sys
+import unicodedata
+import requests
+import json
+
+
+class InvalidOTPError(Exception):
+    pass
 
 
 app = Flask(__name__)
-# limiter = Limiter(
-#     get_remote_address,
-#     app=app,
-#     default_limits=["200 per day", "50 per hour"],
-#     storage_uri="memory://",
-# )
-# limiter = Limiter(app,key_func=get_remote_address)
-
+# Configure rate limiter
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="memory://",
+)
 # Configure secret key and Flask-Session
-app.config['SECRET_KEY'] = 'your_secret_key_here'
+app.config['SECRET_KEY'] = secrets.token_hex()
 app.config['SESSION_TYPE'] = 'filesystem'  # Options: 'filesystem', 'redis', 'memcached', etc.
 app.config['SESSION_PERMANENT'] = False
 app.config['SESSION_USE_SIGNER'] = True  # To sign session cookies for extra security
 app.config['SESSION_FILE_DIR'] = './sessions'  # Needed if using filesystem type
+
+# Configure session cookies
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Strict',
+)
 
 # Load database configuration from db.yaml or configure directly here
 db_config = yaml.load(open('db.yaml'), Loader=yaml.FullLoader)
@@ -63,6 +83,8 @@ app.config['MYSQL_DB'] = db_config['mysql_db']
 
 mysql = MySQL(app)
 
+csrf = CSRFProtect(app)
+
 # Initialize the Flask-Session
 Session(app)
 
@@ -71,6 +93,16 @@ def index():
     if 'user_id' not in session:
         return redirect(url_for('login'))
     sender_id = session['user_id']
+   
+    if session['recovery_keys_num'] == 0:
+        new_recovery_keys = generate_recovery_keys()
+        new_str_recovery_keys = str(','.join(i for i in new_recovery_keys))
+        new_hashed_recovery_keys = hash_recovery_key(new_recovery_keys)
+        new_str_hashed_recovery_keys = str(';'.join(i for i in new_hashed_recovery_keys))
+        update_recovery_key(session['username'], new_str_hashed_recovery_keys)
+        session['recovery_keys_num'] = len(new_recovery_keys)
+        return render_template('rebind_recovery_keys.html', recovery_keys=new_recovery_keys, str_recovery_key=new_str_recovery_keys)
+
     return render_template('chat.html', sender_id=sender_id)
 
 @app.route('/users')
@@ -87,6 +119,7 @@ def users():
     return {'users': filtered_users}
 
 @app.route('/fetch_messages')
+@limiter.exempt
 def fetch_messages():
     if 'user_id' not in session:
         abort(403)
@@ -110,36 +143,256 @@ def fetch_messages():
     cur.close()
     return jsonify({'messages': messages})
 
-@app.route('/goToRegister')
-def goToRegister():
-    return render_template('register.html')
+@app.route('/rebind_otp')
+def rebind_otp():
+    # get username
+    username = session.get('username')
+    # generate TOTP secret
+    totp_secret = pyotp.random_base32()
+    # generate QRCode url
+    auth = pyotp.totp.TOTP(totp_secret, digits=8).provisioning_uri(name=username, issuer_name="COMP3334 Group 12")
+
+    # generate recovery keys
+    recovery_keys = generate_recovery_keys()
+    str_recovery_keys = str(','.join(i for i in recovery_keys))
+    hashed_recovery_keys = hash_recovery_key(recovery_keys)
+    str_hashed_recovery_keys = str(';'.join(i for i in hashed_recovery_keys))
+
+    update_recovery_key(username, str_hashed_recovery_keys)
+    update_totp_secret(username, totp_secret)
+    return render_template('bind_otp.html', auth=auth, recovery_keys=recovery_keys, str_recovery_key=str_recovery_keys)
+
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    error = None
+    if request.method == 'POST':
+        userDetails = request.form
+        # Get the username and password
+        username = userDetails['username']
+        # Normalize unicode string
+        password = unicodedata.normalize('NFKC', userDetails['password'])
+
+        # Retrieve captcha token
+        cap_token = userDetails['h-captcha-response']
+        # Configure parameters for capcha verify
+        params = {
+            "secret": "ES_e15647aa740f4ed98c1fa7c3415c670d",
+            "response": cap_token,
+        }
+        # Send post request to hcaptcha api for verification
+        cap_json = requests.post('https://hcaptcha.com/siteverify', data=params)
+        # parse the json response
+        cap_response = json.loads(cap_json.text)
+        cap_success = cap_response['success']
+        # If captcha verification fails, notify the user
+        if not cap_success:
+            error = 'Invalid captcha'
+            return render_template('register.html', error=error)
+
+        # Check whether the username is existed
+        if check_name_existed(username):
+            error = "Username is existed"
+            return render_template('register.html', error=error)
+        else:
+            # initialize an argon2 password hasher
+            ph = argon2.PasswordHasher()
+
+            # hash password
+            password_hash = ph.hash(password)
+
+            # generate TOTP secret
+            totp_secret = pyotp.random_base32()
+            # generate QRCode url
+            auth = pyotp.totp.TOTP(totp_secret, digits=8).provisioning_uri(name=username, issuer_name="COMP3334 Group 12")
+
+            # generate recovery keys
+            recovery_keys = generate_recovery_keys()
+            str_recovery_keys = str(','.join(i for i in recovery_keys))
+            hashed_recovery_keys = hash_recovery_key(recovery_keys)
+            str_hashed_recovery_keys = str(';'.join(i for i in hashed_recovery_keys))
+
+
+            register_new(username, password_hash, totp_secret, str_hashed_recovery_keys)
+            flash('Your account has been created.', 'info')
+            return render_template('bind_otp.html', auth=auth, recovery_keys=recovery_keys, str_recovery_key=str_recovery_keys)
+
+    return render_template('register.html', error=error)
+
+ # randomly generate recovery keys securely
+def generate_recovery_keys():
+    keys = []
+    for i in range(6): # 6 recovery keys
+        key = ''
+        for j in range(8): # 8 digits
+            key += str(''.join(secrets.choice(string.ascii_letters)))
+        keys.append(key)
+    return keys
+
+def hash_recovery_key(keys):
+    hashed_recovery_keys = []
+    ph = argon2.PasswordHasher()
+    for k in keys:
+        hashed_recovery_keys.append(ph.hash(k))
+    return hashed_recovery_keys
+
+def check_name_existed(username):
+    # Connect to the database
+    cur = mysql.connection.cursor()
+
+    # Use sql to check whether there is same username in the database
+    cur.execute("SELECT COUNT(*) FROM users WHERE username = %s", (username,))
+    search_result = cur.fetchone()[0]
+    number_of_existing = int(search_result)
+
+    # Check whether the number of username is more than 0
+    if number_of_existing > 0:
+        # Already existing
+        return True
+    else:
+        # Not existing
+        return False
+
+def register_new(username, password, totp_secret, recovery_keys):
+    # Connect to the database
+    cur = mysql.connection.cursor()
+
+    # Use sql to input the new username and the password
+    cur.execute("INSERT INTO users (username, password, totp_secret, recovery_keys) VALUES (%s, %s, %s, %s)", (username, password, totp_secret, recovery_keys))
+
+    # Commit the operation to save the change
+    mysql.connection.commit()
+
+    return
+
+def update_password(username, password_hash):
+    cur = mysql.connection.cursor()
+
+    cur.execute("UPDATE users SET password = %s WHERE username = %s", (password_hash, username))
+
+    mysql.connection.commit()
+
+    return
+
+
+def verify_recovery_key(hashed_recovery_keys, key):
+    ph = argon2.PasswordHasher()
+    for h in hashed_recovery_keys:
+        try:
+            print(h, file=sys.stdout)
+            ph.verify(h, key)
+            return True, h
+        except argon2.exceptions.VerifyMismatchError:
+            continue
+    return False, '0'
+
+def update_recovery_key(username, str_recovery_keys):
+    cur = mysql.connection.cursor()
+
+    cur.execute("UPDATE users SET recovery_keys = %s WHERE username = %s", (str_recovery_keys, username))
+
+    mysql.connection.commit()
+
+    return
+
+def update_totp_secret(username, totp_secret):
+    cur = mysql.connection.cursor()
+
+    cur.execute("UPDATE users SET totp_secret = %s WHERE username = %s", (totp_secret, username))
+
+    mysql.connection.commit()
+
+    return
+
 
 @app.route('/login', methods=['GET', 'POST'])
-# @limiter.limit('3 per minute')
+@limiter.limit('100 per day')
 def login():
     error = None
     if request.method == 'POST':
         userDetails = request.form
         username = userDetails['username']
-        password = userDetails['password']
-        valid = userDetails['valid']
-        input_str = userDetails['cpatchaTextBox']
-        if (valid!=input_str):
-            error = 'Invalid captcha'
-            return render_template('login.html', error=error)
-        
+        password = unicodedata.normalize('NFKC', userDetails['password'])
+        otp = userDetails['otp']
         cur = mysql.connection.cursor()
-        cur.execute("SELECT user_id FROM users WHERE username=%s AND password=%s", (username, password,))
+        cur.execute("SELECT user_id, password, totp_secret, recovery_keys FROM users WHERE username=%s", [username])
         account = cur.fetchone()
         if account:
-            session['username'] = username
-            session['user_id'] = account[0]
-            return redirect(url_for('index'))
+            password_hash = account[1]
+            ph = argon2.PasswordHasher()
+
+            # Retrieve captcha token
+            cap_token = userDetails['h-captcha-response']
+            # Configure parameters for capcha verify
+            params = {
+                "secret": "ES_e15647aa740f4ed98c1fa7c3415c670d",
+                "response": cap_token,
+            }
+            # Send post request to hcaptcha api for verification
+            cap_json = requests.post('https://hcaptcha.com/siteverify', data=params)
+            # parse the json response
+            cap_response = json.loads(cap_json.text)
+            print(cap_response, file=sys.stdout)
+            cap_success = cap_response['success']
+            # If captcha verification fails, notify the user
+            if not cap_success:
+                error = 'Invalid captcha'
+                return render_template('login.html', error=error)
+
+            try:
+                # verify password
+                ph.verify(password_hash, password)
+
+                # get user's totp secret
+                totp_secret = account[2]
+                totp = pyotp.TOTP(totp_secret, digits=8)
+
+                # get user's recovery keys
+                str_hashed_recovery_keys = account[3]
+                hashed_recovery_keys = str_hashed_recovery_keys.split(';')
+                # verify totp
+                if totp.verify(otp):
+                    session['username'] = username
+                    session['user_id'] = account[0]
+                    session['recovery_keys_num'] = len(hashed_recovery_keys)
+                    # resp = make_response(render_template('chat.html', sender_id=session['user_id']))
+                    resp = make_response(redirect(url_for('index')))
+                    resp.set_cookie('username', value=username, max_age=600, secure=True, httponly=True, samesite='strict')
+                    return resp
+                # verify recovery keys
+                rk_valid, h = verify_recovery_key(hashed_recovery_keys, otp)
+                if rk_valid:
+                    # remove the used recovery key
+                    hashed_recovery_keys.remove(h)
+
+                    # update recovery key
+                    update_recovery_key(username, str(';'.join(k for k in hashed_recovery_keys)))
+                    session['username'] = username
+                    session['user_id'] = account[0]
+                    session['recovery_keys_num'] = len(hashed_recovery_keys)
+                    # resp = make_response(render_template('chat.html', sender_id=session['user_id']))
+                    resp = make_response(redirect(url_for('index')))
+                    resp.set_cookie('username', value=username, max_age=600, secure=True, httponly=True,
+                                    samesite='strict')
+                    # check if the password need to be rehashed
+                    if ph.check_needs_rehash(password_hash):
+                        update_password(username, ph.hash(password))
+                    return resp
+                else:
+                    raise InvalidOTPError
+
+            except argon2.exceptions.VerifyMismatchError:
+                error = 'Invalid password.'
+            except InvalidOTPError:
+                error = 'Invalid OTP.'
         else:
             error = 'Invalid credentials'
     return render_template('login.html', error=error)
 
+
 @app.route('/send_message', methods=['POST'])
+@limiter.exempt
 def send_message():
     if not request.json or not 'message_text' in request.json:
         abort(400)  # Bad request if the request doesn't contain JSON or lacks 'message_text'
@@ -163,6 +416,42 @@ def send_message():
     return jsonify({'status': 'success', 'message': 'Message sent'}), 200
 
 def save_message(sender, receiver, message, msg_type, msg_iv, msg_value, msg_tag):
+    if (sender<0 or receiver <0):
+        return
+    elif (msg_type == 'normal'):
+        if (msg_value!=''):
+            return
+        if not re.match("^[0-9,]*$", message):
+            return
+        if not re.match("^[0-9]*$", msg_iv):
+            return
+        if not re.match("^[0-9,]*$", msg_tag):
+            return
+    elif (msg_type == 'ECDH request' or msg_type =='ECDH response'):
+        if (msg_iv!='' or msg_value!='' or msg_tag!=''):
+            return
+        # print(type(message))
+        if (not isinstance(message,dict)):
+            return
+        # try:
+        #     json.loads(message.replace("\'","\""))
+        # except ValueError as e:
+        #     return
+    elif (msg_type =='refresh key'):
+        if (message!=''):
+            return
+        if not re.match("^[0-9]*$", msg_iv):
+            return
+        if not re.match("^[0-9,]*$", msg_tag):
+            return
+        if not re.match("^[0-9,]*$", msg_value):
+            return
+    elif (msg_type=='erase chat'):
+        if (message!='' or msg_iv or msg_tag or msg_value):
+            return
+    else:
+        return   
+
     cur = mysql.connection.cursor()
     cur.execute("INSERT INTO messages (sender_id, receiver_id, message_text, message_type, message_iv, message_value, message_tag) VALUES (%s, %s, %s, %s,%s,%s, %s)", (sender, receiver, message, msg_type,msg_iv, msg_value, msg_tag))
     # cur.execute("INSERT INTO messages (sender_id, receiver_id, message_text) VALUES (%s, %s, %s)", (sender, receiver, message))
@@ -171,6 +460,7 @@ def save_message(sender, receiver, message, msg_type, msg_iv, msg_value, msg_tag
     cur.close()
 
 @app.route('/erase_chat', methods=['POST'])
+@limiter.exempt
 def erase_chat():
     if 'user_id' not in session:
         abort(403)
@@ -193,52 +483,13 @@ def logout():
     flash('You have been successfully logged out.', 'info')  # Flash a logout success message
     return redirect(url_for('index'))
 
-# Registration for the new account
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    error = None
-    if request.method == 'POST':
-        userDetails = request.form
-        # Get the username and password
-        username = userDetails['username']
-        password = userDetails['password']
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return render_template('rate_limit_exceeded.html'), 429
 
-        # Check whether the username is existed
-        if check_name_existed(username):
-            error = "Username is existed"
-        else:
-            register_new(username,password)
-
-    return render_template('login.html', error=error)
-
-def check_name_existed(username):
-    # Connect to the databse
-    cur = mysql.connection.cursor()
-
-    # Use sql to check whether there is same username in the database
-    cur.execute("SELECT COUNT(*) FROM users WHERE username = %s", (username,))
-    search_result = cur.fetchone()[0]
-    number_of_existing = int(search_result)
-
-    # Check whether the number of username is more than 0
-    if number_of_existing > 0:
-        # Already existing
-        return True
-    else:
-        # Not existing
-        return False
-
-def register_new(username,password):
-    # Connect to the databse
-    cur = mysql.connection.cursor()
-
-    # Use sql to input the new username and the password
-    cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, password))
-
-    # Commit the operation to save the change
-    mysql.connection.commit()
-    
-    return 
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    return render_template('csrf_error.html', reason=e.description), 400
 
 if __name__ == '__main__':
     app.run(debug=True)

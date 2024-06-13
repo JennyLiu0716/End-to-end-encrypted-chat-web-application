@@ -6,3 +6,8 @@ cryptography==42.0.5
 PyYAML==6.0.1
 Flask-SocketIO==5.3.6
 eventlet==0.35.2
+argon2-cffi==23.1.0
+pyotp==2.9.0
+Flask-limiter==3.5.1
+requests==2.31.0
+Flask-WTF==1.2.1
